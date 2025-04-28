@@ -1,62 +1,46 @@
 #!/bin/bash
 
-# --- Variables ---
+# FRP Version
 FRP_VERSION="0.62.1"
 FRP_DOWNLOAD_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz"
-FRP_DIR="/opt/frp"
-DEFAULT_FRP_PORT="7000"
-FRP_DASHBOARD_PORT="7500"
-FRP_DASHBOARD_USER="admin"
-FRP_DASHBOARD_PASSWORD="admin"
-FRP_TOKEN=$(openssl rand -hex 16)
-SYSTEMD_DIR="/etc/systemd/system"
 
-# Tunnel list
-TUNNELS_LIST=()
+# Colors
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+NC="\033[0m"
 
-# --- Colors ---
-NC='\033[0m'
-CYAN='\033[1;36m'
-PURPLE='\033[1;35m'
-BLUE='\033[1;34m'
-GREEN='\033[1;32m'
-YELLOW='\033[1;33m'
+# Install FRP
+function install_frp() {
+    echo -e "${GREEN}Installing FRP ${FRP_VERSION}...${NC}"
+    wget -qO frp.tar.gz "${FRP_DOWNLOAD_URL}"
+    tar -xzf frp.tar.gz
+    cd frp_${FRP_VERSION}_linux_amd64 || exit
 
-# --- Functions ---
-install_frp() {
-    echo -e "${BLUE}>> Downloading FRP version ${FRP_VERSION}...${NC}"
-    mkdir -p ${FRP_DIR}
-    cd ${FRP_DIR}
-    wget -q --show-progress ${FRP_DOWNLOAD_URL} -O frp.tar.gz
-    tar -xzf frp.tar.gz --strip-components=1
-    rm -f frp.tar.gz
-    echo -e "${CYAN}>> FRP installed at ${FRP_DIR}${NC}"
+    cp frps frpc /usr/local/bin/
+    mkdir -p /etc/frp
+    cp frps.ini frpc.ini /etc/frp/
+    echo -e "${GREEN}FRP installed successfully.${NC}"
 }
 
-setup_frps() {
-    read -p "$(echo -e ${CYAN}"Enter server bind port (default ${DEFAULT_FRP_PORT}): "${NC})" FRP_PORT
-    FRP_PORT=${FRP_PORT:-$DEFAULT_FRP_PORT}
+# Configure FRPS (Server)
+function configure_server() {
+    echo -e "${GREEN}Configuring FRP Server (frps)...${NC}"
+    read -p "Enter bind port (default 7000): " BIND_PORT
+    BIND_PORT=${BIND_PORT:-7000}
 
-    cat > ${FRP_DIR}/frps.ini <<EOF
+    cat > /etc/frp/frps.ini <<EOF
 [common]
-bind_port = ${FRP_PORT}
-token = ${FRP_TOKEN}
-
-dashboard_addr = 0.0.0.0
-dashboard_port = ${FRP_DASHBOARD_PORT}
-dashboard_user = ${FRP_DASHBOARD_USER}
-dashboard_pwd = ${FRP_DASHBOARD_PASSWORD}
+bind_port = ${BIND_PORT}
 EOF
 
-    cat > ${SYSTEMD_DIR}/frps.service <<EOF
+    cat > /etc/systemd/system/frps.service <<EOF
 [Unit]
-Description=FRP Server Service
+Description=FRP Server
 After=network.target
 
 [Service]
-ExecStart=${FRP_DIR}/frps -c ${FRP_DIR}/frps.ini
+ExecStart=/usr/local/bin/frps -c /etc/frp/frps.ini
 Restart=always
-User=root
 
 [Install]
 WantedBy=multi-user.target
@@ -65,89 +49,30 @@ EOF
     systemctl daemon-reload
     systemctl enable frps
     systemctl restart frps
-
-    echo -e "${PURPLE}>> frps server is now running.${NC}"
-    echo -e "${CYAN}>> Dashboard URL: http://your-server-ip:${FRP_DASHBOARD_PORT}${NC}"
-    echo -e "${CYAN}>> Dashboard Login: ${FRP_DASHBOARD_USER} / ${FRP_DASHBOARD_PASSWORD}${NC}"
-    echo -e "${CYAN}>> Your security token: ${FRP_TOKEN}${NC}"
+    echo -e "${GREEN}FRPS service started.${NC}"
 }
 
-setup_frpc() {
-    read -p "$(echo -e ${CYAN}"Enter server IP or domain: "${NC})" SERVER_IP
-    read -p "$(echo -e ${CYAN}"Enter server port (default ${DEFAULT_FRP_PORT}): "${NC})" FRP_PORT
-    FRP_PORT=${FRP_PORT:-$DEFAULT_FRP_PORT}
+# Configure FRPC (Client)
+function configure_client() {
+    echo -e "${GREEN}Configuring FRP Client (frpc)...${NC}"
+    read -p "Enter server IP: " SERVER_IP
+    read -p "Enter server port (default 7000): " SERVER_PORT
+    SERVER_PORT=${SERVER_PORT:-7000}
 
-    echo "[common]" > ${FRP_DIR}/frpc.ini
-    echo "server_addr = ${SERVER_IP}" >> ${FRP_DIR}/frpc.ini
-    echo "server_port = ${FRP_PORT}" >> ${FRP_DIR}/frpc.ini
-    echo "token = ${FRP_TOKEN}" >> ${FRP_DIR}/frpc.ini
-    echo "" >> ${FRP_DIR}/frpc.ini
-
-    while true; do
-        read -p "$(echo -e ${CYAN}"Enter tunnel name (e.g., ssh, http, rdp): "${NC})" TUNNEL_NAME
-        echo -e "${PURPLE}Select tunnel protocol type:${NC}"
-        echo -e "${BLUE}1) tcp${NC}"
-        echo -e "${BLUE}2) udp${NC}"
-        echo -e "${BLUE}3) stcp${NC}"
-        echo -e "${BLUE}4) xtcp${NC}"
-        echo -e "${BLUE}5) faketcp${NC}"
-        echo -e "${BLUE}6) quic${NC}"
-        echo -e "${BLUE}7) kcp${NC}"
-        echo -e "${BLUE}8) tls${NC}"
-        echo -e "${BLUE}9) icmp${NC}"
-        read -p "$(echo -e ${CYAN}"Choose protocol (1-9): "${NC})" PROTOCOL_CHOICE
-
-        case $PROTOCOL_CHOICE in
-            1) PROTOCOL_TYPE="tcp" ;;
-            2) PROTOCOL_TYPE="udp" ;;
-            3) PROTOCOL_TYPE="stcp" ;;
-            4) PROTOCOL_TYPE="xtcp" ;;
-            5) PROTOCOL_TYPE="faketcp" ;;
-            6) PROTOCOL_TYPE="quic" ;;
-            7) PROTOCOL_TYPE="kcp" ;;
-            8) PROTOCOL_TYPE="tls" ;;
-            9) PROTOCOL_TYPE="icmp" ;;
-            *) echo "Invalid protocol selected. Defaulting to tcp."; PROTOCOL_TYPE="tcp" ;;
-        esac
-
-        read -p "$(echo -e ${CYAN}"Enter local IP (e.g., 127.0.0.1): "${NC})" LOCAL_IP
-        read -p "$(echo -e ${CYAN}"Enter local port (e.g., 22 for SSH): "${NC})" LOCAL_PORT
-        read -p "$(echo -e ${CYAN}"Enter remote port or range (e.g., 6000 or 6000-6010): "${NC})" REMOTE_PORT_INPUT
-
-        cat >> ${FRP_DIR}/frpc.ini <<EOF
-[${TUNNEL_NAME}]
-type = ${PROTOCOL_TYPE}
-local_ip = ${LOCAL_IP}
-local_port = ${LOCAL_PORT}
+    cat > /etc/frp/frpc.ini <<EOF
+[common]
+server_addr = ${SERVER_IP}
+server_port = ${SERVER_PORT}
 EOF
 
-        # Handle port or port range
-        if [[ "$REMOTE_PORT_INPUT" == *"-"* ]]; then
-            echo "remote_port_range = ${REMOTE_PORT_INPUT}" >> ${FRP_DIR}/frpc.ini
-        else
-            echo "remote_port = ${REMOTE_PORT_INPUT}" >> ${FRP_DIR}/frpc.ini
-        fi
-
-        echo "" >> ${FRP_DIR}/frpc.ini
-
-        # Save tunnel info
-        TUNNELS_LIST+=("${TUNNEL_NAME} (${PROTOCOL_TYPE}) -> ${LOCAL_IP}:${LOCAL_PORT} -> remote:${REMOTE_PORT_INPUT}")
-
-        read -p "$(echo -e ${CYAN}"Do you want to add another tunnel? (y/n): "${NC})" ADD_MORE
-        if [[ "$ADD_MORE" != "y" ]]; then
-            break
-        fi
-    done
-
-    cat > ${SYSTEMD_DIR}/frpc.service <<EOF
+    cat > /etc/systemd/system/frpc.service <<EOF
 [Unit]
-Description=FRP Client Service
+Description=FRP Client
 After=network.target
 
 [Service]
-ExecStart=${FRP_DIR}/frpc -c ${FRP_DIR}/frpc.ini
+ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.ini
 Restart=always
-User=root
 
 [Install]
 WantedBy=multi-user.target
@@ -156,33 +81,100 @@ EOF
     systemctl daemon-reload
     systemctl enable frpc
     systemctl restart frpc
-    echo -e "${PURPLE}>> frpc client is now running.${NC}"
-    echo -e "${CYAN}>> Your security token: ${FRP_TOKEN}${NC}"
-
-    show_tunnels
+    echo -e "${GREEN}FRPC service started.${NC}"
 }
 
-show_tunnels() {
-    echo -e "\n${YELLOW}--- Active Tunnels ---${NC}"
-    for tunnel in "${TUNNELS_LIST[@]}"; do
-        echo -e "${GREEN}$tunnel${NC}"
+# Add single or multiple tunnels
+function add_tunnel() {
+    echo -e "${GREEN}Adding Tunnel(s)...${NC}"
+    read -p "Tunnel Name Prefix: " NAME_PREFIX
+    echo "Select protocol:"
+    select PROTOCOL in tcp udp icmp; do
+        case $PROTOCOL in
+            tcp|udp) break ;;
+            icmp)
+                echo -e "${RED}ICMP tunneling is not supported natively in FRP! Exiting.${NC}"
+                exit 1 ;;
+            *) echo "Invalid option." ;;
+        esac
     done
-    echo -e "${YELLOW}-----------------------${NC}\n"
+
+    read -p "Enter Local IP: " LOCAL_IP
+    read -p "Enter Local Port Start: " LOCAL_START
+    read -p "Enter Local Port End (same as start if single port): " LOCAL_END
+    read -p "Enter Remote Port Start: " REMOTE_START
+
+    for ((i=0; i<=LOCAL_END-LOCAL_START; i++)); do
+        cat >> /etc/frp/frpc.ini <<EOF
+
+[${NAME_PREFIX}_${i}]
+type = ${PROTOCOL}
+local_ip = ${LOCAL_IP}
+local_port = $((LOCAL_START + i))
+remote_port = $((REMOTE_START + i))
+EOF
+    done
+
+    systemctl restart frpc
+    echo -e "${GREEN}Tunnel(s) added and FRPC restarted.${NC}"
 }
 
-# --- Menu ---
-echo -e "${PURPLE}What do you want to do?${NC}"
-echo -e "${BLUE}1) Install and setup Server (frps)${NC}"
-echo -e "${BLUE}2) Install and setup Client (frpc)${NC}"
-read -p "$(echo -e ${CYAN}"Choose (1/2): "${NC})" CHOICE
+# Remove tunnel
+function remove_tunnel() {
+    echo -e "${GREEN}Removing Tunnel...${NC}"
+    read -p "Enter Tunnel Name or Prefix to remove: " TUNNEL_NAME
+    sed -i "/\[${TUNNEL_NAME}/,/^$/d" /etc/frp/frpc.ini
+    systemctl restart frpc
+    echo -e "${GREEN}Tunnel(s) matching ${TUNNEL_NAME} removed.${NC}"
+}
 
-install_frp
+# Edit tunnel manually
+function edit_tunnel() {
+    echo -e "${GREEN}Editing Tunnel Configuration...${NC}"
+    nano /etc/frp/frpc.ini
+    systemctl restart frpc
+}
 
-if [ "$CHOICE" == "1" ]; then
-    setup_frps
-elif [ "$CHOICE" == "2" ]; then
-    setup_frpc
-else
-    echo -e "${PURPLE}Invalid option selected. Exiting.${NC}"
-    exit 1
-fi
+# Add Cron Job
+function add_cron() {
+    echo -e "${GREEN}Adding Cron Job...${NC}"
+    read -p "Enter cron schedule (e.g. */10 * * * *): " CRON_TIME
+    read -p "Enter command (e.g. systemctl restart frpc): " CRON_CMD
+
+    (crontab -l ; echo "${CRON_TIME} ${CRON_CMD}") | crontab -
+    echo -e "${GREEN}Cron job added.${NC}"
+}
+
+# Tunnel Manager
+function tunnel_manager() {
+    echo -e "${GREEN}Tunnel Manager Menu:${NC}"
+    select opt in "Add Tunnel(s)" "Remove Tunnel" "Edit Tunnel Config" "Add Cron Job" "Back to Main Menu"; do
+        case $opt in
+            "Add Tunnel(s)") add_tunnel ;;
+            "Remove Tunnel") remove_tunnel ;;
+            "Edit Tunnel Config") edit_tunnel ;;
+            "Add Cron Job") add_cron ;;
+            "Back to Main Menu") break ;;
+            *) echo "Invalid option." ;;
+        esac
+    done
+}
+
+# Main Menu
+function main_menu() {
+    while true; do
+        echo -e "${GREEN}FRP Auto Installer & Tunnel Manager${NC}"
+        select option in "Install FRP" "Configure Server (frps)" "Configure Client (frpc)" "Tunnel Manager" "Exit"; do
+            case $option in
+                "Install FRP") install_frp ;;
+                "Configure Server (frps)") configure_server ;;
+                "Configure Client (frpc)") configure_client ;;
+                "Tunnel Manager") tunnel_manager ;;
+                "Exit") exit 0 ;;
+                *) echo "Invalid option." ;;
+            esac
+        done
+    done
+}
+
+main_menu

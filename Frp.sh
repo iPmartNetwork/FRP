@@ -1,180 +1,158 @@
 #!/bin/bash
 
-# FRP Version
-FRP_VERSION="0.62.1"
-FRP_DOWNLOAD_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz"
-
 # Colors
-GREEN="\033[0;32m"
-RED="\033[0;31m"
-NC="\033[0m"
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+NC='\033[0m' # No Color
+
+# Configuration
+FRP_VERSION="0.52.3"
+FRP_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz"
+INSTALL_DIR="/opt/frp"
+SERVER_IP=""
+SERVER_PORT="7000"
+TOKEN="changeme"
+LOCAL_PORT=""
+REMOTE_PORT=""
+USE_UDP="no"
 
 # Install FRP
-function install_frp() {
-    echo -e "${GREEN}Installing FRP ${FRP_VERSION}...${NC}"
-    wget -qO frp.tar.gz "${FRP_DOWNLOAD_URL}"
+install_frp() {
+    echo -e "${CYAN}[+] Installing FRP...${NC}"
+    mkdir -p $INSTALL_DIR
+    cd /tmp
+    wget -q $FRP_URL -O frp.tar.gz
     tar -xzf frp.tar.gz
-    cd frp_${FRP_VERSION}_linux_amd64 || exit
-
-    cp frps frpc /usr/local/bin/
-    mkdir -p /etc/frp
-    cp frps.ini frpc.ini /etc/frp/
-    echo -e "${GREEN}FRP installed successfully.${NC}"
+    mv frp_${FRP_VERSION}_linux_amd64/* $INSTALL_DIR
+    chmod +x $INSTALL_DIR/frps $INSTALL_DIR/frpc
+    echo -e "${CYAN}[+] FRP installed successfully.${NC}"
 }
 
-# Configure FRPS (Server)
-function configure_server() {
-    echo -e "${GREEN}Configuring FRP Server (frps)...${NC}"
-    read -p "Enter bind port (default 7000): " BIND_PORT
-    BIND_PORT=${BIND_PORT:-7000}
-
-    cat > /etc/frp/frps.ini <<EOF
+# Create Server Configuration
+create_server_config() {
+    cat > $INSTALL_DIR/frps.ini <<EOF
 [common]
-bind_port = ${BIND_PORT}
+bind_port = ${SERVER_PORT}
+token = ${TOKEN}
 EOF
-
-    cat > /etc/systemd/system/frps.service <<EOF
-[Unit]
-Description=FRP Server
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/frps -c /etc/frp/frps.ini
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable frps
-    systemctl restart frps
-    echo -e "${GREEN}FRPS service started.${NC}"
 }
 
-# Configure FRPC (Client)
-function configure_client() {
-    echo -e "${GREEN}Configuring FRP Client (frpc)...${NC}"
-    read -p "Enter server IP: " SERVER_IP
-    read -p "Enter server port (default 7000): " SERVER_PORT
-    SERVER_PORT=${SERVER_PORT:-7000}
-
-    cat > /etc/frp/frpc.ini <<EOF
+# Create Client Configuration
+create_client_config() {
+    if [ "$USE_UDP" == "yes" ]; then
+        cat > $INSTALL_DIR/frpc.ini <<EOF
 [common]
 server_addr = ${SERVER_IP}
 server_port = ${SERVER_PORT}
-EOF
+token = ${TOKEN}
 
-    cat > /etc/systemd/system/frpc.service <<EOF
+[udptunnel]
+type = udp
+local_ip = 127.0.0.1
+local_port = ${LOCAL_PORT}
+remote_port = ${REMOTE_PORT}
+EOF
+    else
+        cat > $INSTALL_DIR/frpc.ini <<EOF
+[common]
+server_addr = ${SERVER_IP}
+server_port = ${SERVER_PORT}
+token = ${TOKEN}
+
+[tcptunnel]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${LOCAL_PORT}
+remote_port = ${REMOTE_PORT}
+EOF
+    fi
+}
+
+# Create systemd Service
+create_service() {
+    if [[ "$MODE" == "server" ]]; then
+        SERVICE_FILE="/etc/systemd/system/frps.service"
+        cat > $SERVICE_FILE <<EOF
 [Unit]
-Description=FRP Client
+Description=FRP Server Service
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.ini
+ExecStart=${INSTALL_DIR}/frps -c ${INSTALL_DIR}/frps.ini
 Restart=always
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    else
+        SERVICE_FILE="/etc/systemd/system/frpc.service"
+        cat > $SERVICE_FILE <<EOF
+[Unit]
+Description=FRP Client Service
+After=network.target
 
-    systemctl daemon-reload
-    systemctl enable frpc
-    systemctl restart frpc
-    echo -e "${GREEN}FRPC service started.${NC}"
-}
+[Service]
+ExecStart=${INSTALL_DIR}/frpc -c ${INSTALL_DIR}/frpc.ini
+Restart=always
+User=root
 
-# Add single or multiple tunnels
-function add_tunnel() {
-    echo -e "${GREEN}Adding Tunnel(s)...${NC}"
-    read -p "Tunnel Name Prefix: " NAME_PREFIX
-    echo "Select protocol:"
-    select PROTOCOL in tcp udp icmp; do
-        case $PROTOCOL in
-            tcp|udp) break ;;
-            icmp)
-                echo -e "${RED}ICMP tunneling is not supported natively in FRP! Exiting.${NC}"
-                exit 1 ;;
-            *) echo "Invalid option." ;;
-        esac
-    done
-
-    read -p "Enter Local IP: " LOCAL_IP
-    read -p "Enter Local Port Start: " LOCAL_START
-    read -p "Enter Local Port End (same as start if single port): " LOCAL_END
-    read -p "Enter Remote Port Start: " REMOTE_START
-
-    for ((i=0; i<=LOCAL_END-LOCAL_START; i++)); do
-        cat >> /etc/frp/frpc.ini <<EOF
-
-[${NAME_PREFIX}_${i}]
-type = ${PROTOCOL}
-local_ip = ${LOCAL_IP}
-local_port = $((LOCAL_START + i))
-remote_port = $((REMOTE_START + i))
+[Install]
+WantedBy=multi-user.target
 EOF
-    done
+    fi
 
-    systemctl restart frpc
-    echo -e "${GREEN}Tunnel(s) added and FRPC restarted.${NC}"
-}
-
-# Remove tunnel
-function remove_tunnel() {
-    echo -e "${GREEN}Removing Tunnel...${NC}"
-    read -p "Enter Tunnel Name or Prefix to remove: " TUNNEL_NAME
-    sed -i "/\[${TUNNEL_NAME}/,/^$/d" /etc/frp/frpc.ini
-    systemctl restart frpc
-    echo -e "${GREEN}Tunnel(s) matching ${TUNNEL_NAME} removed.${NC}"
-}
-
-# Edit tunnel manually
-function edit_tunnel() {
-    echo -e "${GREEN}Editing Tunnel Configuration...${NC}"
-    nano /etc/frp/frpc.ini
-    systemctl restart frpc
-}
-
-# Add Cron Job
-function add_cron() {
-    echo -e "${GREEN}Adding Cron Job...${NC}"
-    read -p "Enter cron schedule (e.g. */10 * * * *): " CRON_TIME
-    read -p "Enter command (e.g. systemctl restart frpc): " CRON_CMD
-
-    (crontab -l ; echo "${CRON_TIME} ${CRON_CMD}") | crontab -
-    echo -e "${GREEN}Cron job added.${NC}"
-}
-
-# Tunnel Manager
-function tunnel_manager() {
-    echo -e "${GREEN}Tunnel Manager Menu:${NC}"
-    select opt in "Add Tunnel(s)" "Remove Tunnel" "Edit Tunnel Config" "Add Cron Job" "Back to Main Menu"; do
-        case $opt in
-            "Add Tunnel(s)") add_tunnel ;;
-            "Remove Tunnel") remove_tunnel ;;
-            "Edit Tunnel Config") edit_tunnel ;;
-            "Add Cron Job") add_cron ;;
-            "Back to Main Menu") break ;;
-            *) echo "Invalid option." ;;
-        esac
-    done
+    echo -e "${CYAN}[+] systemd service created.${NC}"
+    systemctl daemon-reload
+    systemctl enable $(basename $SERVICE_FILE)
+    systemctl start $(basename $SERVICE_FILE)
+    echo -e "${CYAN}[+] Service $(basename $SERVICE_FILE) enabled and started.${NC}"
 }
 
 # Main Menu
-function main_menu() {
-    while true; do
-        echo -e "${GREEN}FRP Auto Installer & Tunnel Manager${NC}"
-        select option in "Install FRP" "Configure Server (frps)" "Configure Client (frpc)" "Tunnel Manager" "Exit"; do
-            case $option in
-                "Install FRP") install_frp ;;
-                "Configure Server (frps)") configure_server ;;
-                "Configure Client (frpc)") configure_client ;;
-                "Tunnel Manager") tunnel_manager ;;
-                "Exit") exit 0 ;;
-                *) echo "Invalid option." ;;
-            esac
-        done
-    done
-}
+echo -e "${CYAN}--- FRP Auto Installer ---${NC}"
+echo ""
+echo -e "${CYAN}Is this the External Server or Internal Client?${NC}"
+echo -e "${PURPLE}[server/client]: ${NC}\c"
+read MODE
 
-main_menu
+if [[ "$MODE" == "server" ]]; then
+    echo -e "${CYAN}Enter server bind port (e.g., 7000):${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read SERVER_PORT
+    echo -e "${CYAN}Enter authentication token:${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read TOKEN
+    install_frp
+    create_server_config
+    create_service
+    echo -e "${CYAN}[+] FRP server setup completed successfully.${NC}"
+
+elif [[ "$MODE" == "client" ]]; then
+    echo -e "${CYAN}Enter external server IP address:${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read SERVER_IP
+    echo -e "${CYAN}Enter server port (e.g., 7000):${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read SERVER_PORT
+    echo -e "${CYAN}Enter authentication token:${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read TOKEN
+    echo -e "${CYAN}Enter your local service port:${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read LOCAL_PORT
+    echo -e "${CYAN}Enter remote exposed port:${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read REMOTE_PORT
+    echo -e "${CYAN}Use UDP protocol? (yes/no)${NC}"
+    echo -e "${PURPLE}> ${NC}\c"
+    read USE_UDP
+    install_frp
+    create_client_config
+    create_service
+    echo -e "${CYAN}[+] FRP client setup completed successfully.${NC}"
+
+else
+    echo -e "${CYAN}Invalid input! Please type server or client.${NC}"
+    exit 1
+fi

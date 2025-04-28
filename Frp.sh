@@ -11,11 +11,16 @@ FRP_DASHBOARD_PASSWORD="admin"
 FRP_TOKEN=$(openssl rand -hex 16)
 SYSTEMD_DIR="/etc/systemd/system"
 
+# Tunnel list
+TUNNELS_LIST=()
+
 # --- Colors ---
-NC='\033[0m'        # No Color
-CYAN='\033[1;36m'   # Light Cyan
-PURPLE='\033[1;35m' # Light Purple
-BLUE='\033[1;34m'   # Blue
+NC='\033[0m'
+CYAN='\033[1;36m'
+PURPLE='\033[1;35m'
+BLUE='\033[1;34m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
 
 # --- Functions ---
 install_frp() {
@@ -60,6 +65,7 @@ EOF
     systemctl daemon-reload
     systemctl enable frps
     systemctl restart frps
+
     echo -e "${PURPLE}>> frps server is now running.${NC}"
     echo -e "${CYAN}>> Dashboard URL: http://your-server-ip:${FRP_DASHBOARD_PORT}${NC}"
     echo -e "${CYAN}>> Dashboard Login: ${FRP_DASHBOARD_USER} / ${FRP_DASHBOARD_PASSWORD}${NC}"
@@ -82,8 +88,8 @@ setup_frpc() {
         echo -e "${PURPLE}Select tunnel protocol type:${NC}"
         echo -e "${BLUE}1) tcp${NC}"
         echo -e "${BLUE}2) udp${NC}"
-        echo -e "${BLUE}3) stcp (secure tcp)${NC}"
-        echo -e "${BLUE}4) xtcp (P2P)${NC}"
+        echo -e "${BLUE}3) stcp${NC}"
+        echo -e "${BLUE}4) xtcp${NC}"
         echo -e "${BLUE}5) faketcp${NC}"
         echo -e "${BLUE}6) quic${NC}"
         echo -e "${BLUE}7) kcp${NC}"
@@ -106,16 +112,26 @@ setup_frpc() {
 
         read -p "$(echo -e ${CYAN}"Enter local IP (e.g., 127.0.0.1): "${NC})" LOCAL_IP
         read -p "$(echo -e ${CYAN}"Enter local port (e.g., 22 for SSH): "${NC})" LOCAL_PORT
-        read -p "$(echo -e ${CYAN}"Enter remote port (e.g., 6000 or any free port): "${NC})" REMOTE_PORT
+        read -p "$(echo -e ${CYAN}"Enter remote port or range (e.g., 6000 or 6000-6010): "${NC})" REMOTE_PORT_INPUT
 
         cat >> ${FRP_DIR}/frpc.ini <<EOF
 [${TUNNEL_NAME}]
 type = ${PROTOCOL_TYPE}
 local_ip = ${LOCAL_IP}
 local_port = ${LOCAL_PORT}
-remote_port = ${REMOTE_PORT}
-
 EOF
+
+        # Handle port or port range
+        if [[ "$REMOTE_PORT_INPUT" == *"-"* ]]; then
+            echo "remote_port_range = ${REMOTE_PORT_INPUT}" >> ${FRP_DIR}/frpc.ini
+        else
+            echo "remote_port = ${REMOTE_PORT_INPUT}" >> ${FRP_DIR}/frpc.ini
+        fi
+
+        echo "" >> ${FRP_DIR}/frpc.ini
+
+        # Save tunnel info
+        TUNNELS_LIST+=("${TUNNEL_NAME} (${PROTOCOL_TYPE}) -> ${LOCAL_IP}:${LOCAL_PORT} -> remote:${REMOTE_PORT_INPUT}")
 
         read -p "$(echo -e ${CYAN}"Do you want to add another tunnel? (y/n): "${NC})" ADD_MORE
         if [[ "$ADD_MORE" != "y" ]]; then
@@ -142,6 +158,16 @@ EOF
     systemctl restart frpc
     echo -e "${PURPLE}>> frpc client is now running.${NC}"
     echo -e "${CYAN}>> Your security token: ${FRP_TOKEN}${NC}"
+
+    show_tunnels
+}
+
+show_tunnels() {
+    echo -e "\n${YELLOW}--- Active Tunnels ---${NC}"
+    for tunnel in "${TUNNELS_LIST[@]}"; do
+        echo -e "${GREEN}$tunnel${NC}"
+    done
+    echo -e "${YELLOW}-----------------------${NC}\n"
 }
 
 # --- Menu ---
